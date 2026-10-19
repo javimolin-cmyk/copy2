@@ -1,0 +1,100 @@
+name: Clonar sitio
+run-name: Clonar ${{ inputs.url }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Enlace de la página a copiar"
+        required: true
+        type: string
+      carpeta:
+        description: "Nombre de la subcarpeta en copias/ (vacío = dominio)"
+        required: false
+        default: ""
+        type: string
+      modo:
+        description: "snapshot = idéntica y fiable (sin scripts) · interactivo = conserva los scripts"
+        required: false
+        default: "snapshot"
+        type: choice
+        options: [snapshot, interactivo]
+      acciones:
+        description: "Hacer scroll, abrir menús/pestañas/acordeones"
+        required: false
+        default: "true"
+        type: string
+      robots:
+        description: "Respetar robots.txt"
+        required: false
+        default: "true"
+        type: string
+      externo:
+        description: "Guardar recursos de otros dominios (CDN, fuentes)"
+        required: false
+        default: "true"
+        type: string
+      subdominios:
+        description: "Incluir subdominios"
+        required: false
+        default: "false"
+        type: string
+      max_paginas:
+        description: "Máximo de páginas"
+        required: false
+        default: "300"
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: clonar
+  cancel-in-progress: false
+
+jobs:
+  clonar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias y Chromium
+        run: |
+          pip install playwright beautifulsoup4 requests
+          playwright install --with-deps chromium
+
+      - name: Clonar
+        env:
+          W2R_URL: ${{ inputs.url }}
+          W2R_CARPETA: ${{ inputs.carpeta }}
+          W2R_MODO: ${{ inputs.modo }}
+          W2R_ACCIONES: ${{ inputs.acciones }}
+          W2R_ROBOTS: ${{ inputs.robots }}
+          W2R_EXTERNO: ${{ inputs.externo }}
+          W2R_SUBDOMINIOS: ${{ inputs.subdominios }}
+          W2R_MAX_PAGINAS: ${{ inputs.max_paginas }}
+        run: python scripts/clone.py
+
+      - name: Guardar en el repositorio
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config http.postBuffer 524288000
+          git add -A copias
+          if git diff --cached --quiet; then echo "Sin cambios"; exit 0; fi
+          git commit -m "Copia de ${{ inputs.url }}"
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin "${{ github.ref_name }}" && git push origin "HEAD:${{ github.ref_name }}" && break
+            sleep 5
+          done
+
+      - name: Pedir a GitHub Pages que se actualice
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" || true
