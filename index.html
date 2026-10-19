@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clonador de sitios</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1b1f24; --muted:#5d6673; --line:#dde1e7; --accent:#2457d6; --on:#fff; --ok:#1a7f37; --err:#c62828; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151a; --card:#1b2028; --text:#e8ecf2; --muted:#98a2b3; --line:#2c333d; --accent:#6c93ff; --on:#0b1020; --ok:#4cc26b; --err:#ff7b72; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:780px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:1.7rem; margin:0 0 4px; } h2 { font-size:1.1rem; margin:0 0 12px; }
+  .sub { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label { display:block; font-weight:600; margin:14px 0 6px; } label:first-child { margin-top:0; }
+  .hint { font-weight:400; color:var(--muted); font-size:.85rem; }
+  input[type=text], input[type=password], input[type=number], select { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; }
+  input:focus, select:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:560px) { .row { grid-template-columns:1fr; } }
+  .checks { display:grid; grid-template-columns:1fr 1fr; gap:6px 16px; margin-top:10px; }
+  @media (max-width:560px) { .checks { grid-template-columns:1fr; } }
+  .checks label { font-weight:400; margin:0; display:flex; gap:8px; align-items:flex-start; }
+  details summary { cursor:pointer; font-weight:600; margin-top:16px; }
+  button { background:var(--accent); color:var(--on); border:0; border-radius:8px; padding:12px 20px; font:inherit; font-weight:600; cursor:pointer; width:100%; margin-top:18px; }
+  button:disabled { opacity:.55; cursor:wait; }
+  a { color:var(--accent); } .muted { color:var(--muted); font-size:.9rem; } .err { color:var(--err); font-weight:600; } .ok { color:var(--ok); font-weight:600; }
+  #prog { display:none; }
+  .copy { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
+  .copy:first-of-type { border-top:0; }
+  .copy b { word-break:break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Clonador de sitios</h1>
+  <p class="sub">Pega un enlace: se guarda una copia completa en una subcarpeta de este repositorio y se publica aquí mismo.</p>
+
+  <form id="f" class="card">
+    <label for="url">Enlace de la página</label>
+    <input type="text" id="url" placeholder="https://ejemplo.com" required>
+
+    <div class="row">
+      <div>
+        <label for="carpeta">Subcarpeta <span class="hint">(opcional)</span></label>
+        <input type="text" id="carpeta" placeholder="ejemplo.com">
+      </div>
+      <div>
+        <label for="modo">Modo</label>
+        <select id="modo">
+          <option value="snapshot">Instantánea (idéntica, sin scripts)</option>
+          <option value="interactivo">Interactivo (conserva scripts)</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="token">Token de GitHub</label>
+    <input type="password" id="token" placeholder="ghp_… (permisos repo + workflow)" autocomplete="off">
+    <div class="checks"><label><input type="checkbox" id="rec"> Recordar el token en este navegador</label></div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="acciones" checked> Scroll y abrir menús/pestañas</label>
+      <label><input type="checkbox" id="robots" checked> Respetar robots.txt</label>
+      <label><input type="checkbox" id="externo" checked> Guardar recursos de otros dominios</label>
+      <label><input type="checkbox" id="subs"> Incluir subdominios</label>
+    </div>
+
+    <details>
+      <summary>Repositorio y límites</summary>
+      <div class="row">
+        <div><label for="owner">Usuario</label><input type="text" id="owner"></div>
+        <div><label for="repo">Repositorio</label><input type="text" id="repo"></div>
+      </div>
+      <label for="maxp">Máx. páginas</label>
+      <input type="number" id="maxp" value="300" min="1" max="2000">
+    </details>
+
+    <button id="go" type="submit">Crear copia</button>
+    <p class="muted">Úsalo con sitios tuyos o con permiso del autor. Los formularios de la copia quedan desactivados y cada página lleva un aviso de que es una copia archivada.</p>
+  </form>
+
+  <section id="prog" class="card">
+    <h2>Progreso</h2>
+    <div id="pmsg" class="muted"></div>
+  </section>
+
+  <section class="card">
+    <h2>Copias guardadas</h2>
+    <div id="list" class="muted">Cargando…</div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const API = 'https://api.github.com';
+let timer = null, t0 = 0;
+
+// Usuario/repositorio a partir de la dirección de GitHub Pages
+(function () {
+  const h = location.hostname;
+  if (h.endsWith('.github.io')) {
+    $('#owner').value = h.split('.')[0];
+    $('#repo').value = location.pathname.split('/')[1] || h;
+  }
+  try { const t = localStorage.getItem('w2r_token'); if (t) { $('#token').value = t; $('#rec').checked = true; } } catch (e) {}
+})();
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function gh(path, opt = {}) {
+  const r = await fetch(API + path, Object.assign({}, opt, {
+    headers: Object.assign({ 'Authorization': 'Bearer ' + $('#token').value.trim(), 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, opt.headers || {})
+  }));
+  if (!r.ok && r.status !== 204) {
+    let m = ''; try { m = (await r.json()).message; } catch (e) {}
+    throw new Error('GitHub ' + r.status + (m ? ': ' + m : ''));
+  }
+  return r;
+}
+
+$('#f').addEventListener('submit', async e => {
+  e.preventDefault();
+  const owner = $('#owner').value.trim(), repo = $('#repo').value.trim(), token = $('#token').value.trim();
+  const p = $('#pmsg'); $('#prog').style.display = 'block';
+  if (!owner || !repo || !token) { p.innerHTML = '<span class="err">Faltan usuario, repositorio o token.</span>'; return; }
+  try { if ($('#rec').checked) localStorage.setItem('w2r_token', token); else localStorage.removeItem('w2r_token'); } catch (e) {}
+  $('#go').disabled = true; p.textContent = 'Enviando la orden a GitHub…';
+  try {
+    const info = await (await gh(`/repos/${owner}/${repo}`)).json();
+    t0 = Date.now() - 20000;
+    await gh(`/repos/${owner}/${repo}/actions/workflows/clonar.yml/dispatches`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: info.default_branch, inputs: {
+        url: $('#url').value.trim(), carpeta: $('#carpeta').value.trim(), modo: $('#modo').value,
+        acciones: String($('#acciones').checked), robots: String($('#robots').checked),
+        externo: String($('#externo').checked), subdominios: String($('#subs').checked),
+        max_paginas: String($('#maxp').value || 300) } })
+    });
+    p.textContent = 'Orden enviada. Esperando a que empiece…';
+    clearInterval(timer); timer = setInterval(() => poll(owner, repo), 8000); setTimeout(() => poll(owner, repo), 3000);
+  } catch (err) {
+    p.innerHTML = '<span class="err">' + esc(err.message) + '</span>';
+    $('#go').disabled = false;
+  }
+});
+
+async function poll(owner, repo) {
+  const p = $('#pmsg');
+  try {
+    const d = await (await gh(`/repos/${owner}/${repo}/actions/workflows/clonar.yml/runs?event=workflow_dispatch&per_page=5`)).json();
+    const run = (d.workflow_runs || []).find(r => new Date(r.created_at).getTime() >= t0);
+    if (!run) return;
+    const link = ` <a href="${run.html_url}" target="_blank" rel="noopener">ver registro ↗</a>`;
+    if (run.status !== 'completed') { p.innerHTML = 'Copiando… (' + esc(run.status === 'queued' ? 'en cola' : 'en curso') + ')' + link + '<br><span class="muted">Puede tardar desde unos minutos hasta más de una hora en sitios grandes. Puedes cerrar esta página.</span>'; return; }
+    clearInterval(timer); $('#go').disabled = false;
+    if (run.conclusion === 'success') {
+      p.innerHTML = '<span class="ok">Copia terminada.</span>' + link + '<br><span class="muted">GitHub Pages tarda 1–2 minutos en publicarla.</span>';
+      loadList();
+    } else {
+      p.innerHTML = '<span class="err">La ejecución terminó con ' + esc(run.conclusion) + '.</span>' + link;
+    }
+  } catch (err) { /* se reintenta */ }
+}
+
+async function loadList() {
+  const box = $('#list');
+  try {
+    const r = await fetch('copias/index.json?t=' + Date.now());
+    if (!r.ok) throw 0;
+    const items = await r.json();
+    if (!items.length) { box.textContent = 'Todavía no hay copias.'; return; }
+    box.innerHTML = items.map(i => `<div class="copy"><div><a href="copias/${encodeURIComponent(i.carpeta)}/" target="_blank"><b>${esc(i.carpeta)}</b></a><br><span class="muted">${esc(i.url)} · ${i.paginas} págs · ${i.archivos} archivos · ${i.mb} MB · ${esc(i.fecha.slice(0, 10))}</span></div><div class="muted">${esc(i.modo || '')}</div></div>`).join('');
+  } catch (e) { box.textContent = 'Todavía no hay copias.'; }
+}
+loadList();
+</script>
+</body>
+</html>
