@@ -66,6 +66,8 @@
       <label><input type="checkbox" id="robots" checked> Respetar robots.txt</label>
       <label><input type="checkbox" id="externo" checked> Guardar recursos de otros dominios</label>
       <label><input type="checkbox" id="subs"> Incluir subdominios</label>
+      <label><input type="checkbox" id="omPrecios" checked> Omitir páginas de precios</label>
+      <label><input type="checkbox" id="omIdiomas" checked> Omitir otros idiomas</label>
     </div>
 
     <details>
@@ -76,6 +78,8 @@
       </div>
       <label for="maxp">Máx. páginas</label>
       <input type="number" id="maxp" value="300" min="1" max="2000">
+      <label for="excl">Excluir además <span class="hint">(palabras de la ruta, separadas por coma: blog, login…)</span></label>
+      <input type="text" id="excl" placeholder="blog, login">
     </details>
 
     <button id="go" type="submit">Crear copia</button>
@@ -137,7 +141,9 @@ $('#f').addEventListener('submit', async e => {
         url: $('#url').value.trim(), carpeta: $('#carpeta').value.trim(), modo: $('#modo').value,
         acciones: String($('#acciones').checked), robots: String($('#robots').checked),
         externo: String($('#externo').checked), subdominios: String($('#subs').checked),
-        max_paginas: String($('#maxp').value || 300) } })
+        max_paginas: String($('#maxp').value || 300),
+        omitir: [$('#omPrecios').checked ? 'precios' : '', $('#omIdiomas').checked ? 'idiomas' : ''].filter(Boolean).join(','),
+        excluir: $('#excl').value.trim() } })
     });
     p.textContent = 'Orden enviada. Esperando a que empiece…';
     clearInterval(timer); timer = setInterval(() => poll(owner, repo), 8000); setTimeout(() => poll(owner, repo), 3000);

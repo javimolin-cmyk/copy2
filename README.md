@@ -28,6 +28,9 @@ El token solo se envía a la API de GitHub; se guarda en el navegador únicament
 - Carga cada página en Chromium, hace scroll para activar la carga diferida y pulsa pestañas, acordeones y menús que no cambian de página.
 - Registra todo lo que la página pide a la red y lo guarda; en `_w2r/red.json` queda el listado.
 - Reescribe los enlaces a rutas relativas. Los recursos de otros dominios van a `_ext/<dominio>/`.
+- Omite por defecto las páginas de precios (rutas con `pricing`, `precios`, `tarifas`…) y las versiones de otros
+  idiomas (`/fr/…`, `fr.sitio.com`, `?lang=fr` y las declaradas con `hreflang`); se queda con el idioma de la página
+  inicial. Ambas se pueden desactivar, y puedes añadir palabras propias para excluir. La lista de lo omitido queda en `_w2r/omitidas.json`.
 - Desactiva los formularios de la copia y añade a cada página un aviso de "copia archivada".
 
 ## Límites reales

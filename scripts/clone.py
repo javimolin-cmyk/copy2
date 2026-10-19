@@ -21,7 +21,7 @@ from collections import deque
 from datetime import datetime, timezone
 from posixpath import dirname, relpath
 from urllib import robotparser
-from urllib.parse import quote, unquote, urldefrag, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urldefrag, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -50,6 +50,20 @@ CT_EXT = {
     "font/woff": ".woff", "font/ttf": ".ttf", "application/pdf": ".pdf",
     "video/mp4": ".mp4", "video/webm": ".webm", "audio/mpeg": ".mp3",
 }
+# Palabras que marcan una página de precios (se buscan como palabra completa dentro de la ruta)
+PRICE_WORDS = {"pricing", "price", "prices", "precio", "precios", "tarifa", "tarifas", "preise", "tarifs", "prix"}
+# Códigos de idioma ISO 639-1 (se omiten los que se confunden con palabras de rutas: my, as, or, to, an, be, so, is)
+LANGS = set("""af am ar az bg bn bs ca cs cy da de el en es et eu fa fi fr ga gl gu he hi hr hu hy id it ja ka kk km
+kn ko lo lt lv mk ml mn mr ms ne nl no nb nn pa pl pt ro ru si sk sl sq sr sv sw ta te th tl tr uk ur uz vi zh""".split())
+LANG_QUERY = ("lang", "hl", "locale", "language", "lng")
+
+
+def lang_code(s):
+    """'es', 'pt-br', 'zh_hans' -> código primario si es un idioma conocido."""
+    m = re.fullmatch(r"([a-z]{2})(?:[-_]([a-z]{2,4}))?", s.lower())
+    return m.group(1) if m and m.group(1) in LANGS else None
+
+
 CSS_URL = re.compile(r"""url\(\s*(['"]?)([^'")]+?)\1\s*\)""", re.I)
 CSS_IMPORT = re.compile(r"""@import\s+(['"])([^'"]+)\1""", re.I)
 
@@ -260,6 +274,65 @@ class Cloner:
         self.taken = {}
         self.meta = {}         # ruta local -> (tipo, url base, renderizado?)
         self.omitidos = 0
+        self.base_lang = None  # idioma de la copia (el de la página inicial)
+        self.excluded = set()  # URLs de otros idiomas declaradas con hreflang
+        self.skipped = {}      # URL omitida -> motivo
+
+    # --- filtros: precios, otros idiomas, exclusiones propias
+    def lang_of(self, url):
+        p = urlparse(url)
+        h = host_key(p.netloc)
+        if h != self.root_key and h.endswith("." + self.root_key):   # fr.ejemplo.com
+            c = lang_code(h[: -len(self.root_key) - 1].split(".")[0])
+            if c:
+                return c
+        seg = [s for s in p.path.split("/") if s]
+        if seg:
+            c = lang_code(seg[0])                                      # /fr/pagina
+            if c:
+                return c
+        q = parse_qs(p.query)
+        for k in LANG_QUERY:                                           # ?lang=fr
+            for v in q.get(k, []):
+                c = lang_code(v)
+                if c:
+                    return c
+        return None
+
+    def skip_reason(self, n):
+        omitir = self.a.omitir_set
+        p = urlparse(n)
+        path = unquote(p.path).lower()
+        if "precios" in omitir and any(t in PRICE_WORDS for t in re.split(r"[^a-z0-9]+", path)):
+            return "precios"
+        if "idiomas" in omitir:
+            if n in self.excluded:
+                return "idioma"
+            l = self.lang_of(n)
+            if l and l != self.base_lang:
+                return "idioma"
+        full = path + ("?" + p.query.lower() if p.query else "")
+        for w in self.a.excluir:
+            if w in full:
+                return "excluido"
+        return None
+
+    def read_alternates(self, soup, final):
+        """Las <link rel=alternate hreflang> declaran las versiones de la misma página en otros idiomas."""
+        alts = []
+        for l in soup.find_all("link", hreflang=True):
+            if "alternate" in [x.lower() for x in (l.get("rel") or [])] and l.get("href"):
+                hl = l["hreflang"].strip().lower()
+                if hl != "x-default":
+                    alts.append((hl.split("-")[0], norm(urljoin(final, l["href"]))))
+        if self.base_lang is None:
+            for code, u in alts:
+                if u == final:
+                    self.base_lang = code
+        if "idiomas" in self.a.omitir_set and self.base_lang:
+            for code, u in alts:
+                if code != self.base_lang:
+                    self.excluded.add(u)
 
     # --- ayudas
     def time_over(self):
@@ -311,6 +384,11 @@ class Cloner:
         if not r:
             return
         n, k = r
+        if kind == "link":
+            why = self.skip_reason(n)
+            if why:
+                self.skipped.setdefault(n, why)
+                return
         if k == "page":
             if n not in self.seen and self.pages_q < self.a.max_pages:
                 self.seen.add(n)
@@ -437,9 +515,18 @@ class Cloner:
             if not self.root_set:
                 self.root_key = host_key(urlparse(final).netloc)
                 self.root_set = True
+                self.base_lang = self.lang_of(final)
+                if not self.base_lang:
+                    try:
+                        self.base_lang = lang_code(page.evaluate("document.documentElement.lang || ''")
+                                                   .split("-")[0].split("_")[0])
+                    except Exception:
+                        pass
+                log(f"Idioma de la copia: {self.base_lang or 'no detectado'}")
             if self.a.acciones:
                 self.scroll_all(page)
             html = page.content()
+            self.read_alternates(BeautifulSoup(html, "html.parser"), final)
             links = self.collect_links(page)
             if self.a.acciones:
                 self.interact(page)
@@ -603,6 +690,8 @@ class Cloner:
                  if r.rtype in ("xhr", "fetch") and n in self.saved}
             self.put("_w2r/shim.js", SHIM_JS.replace("__MAP__", json.dumps(m)).encode("utf-8"))
         self.put("_w2r/red.json", json.dumps(net, ensure_ascii=False, indent=1).encode("utf-8"))
+        self.put("_w2r/omitidas.json", json.dumps(
+            [{"url": u, "motivo": m} for u, m in self.skipped.items()], ensure_ascii=False, indent=1).encode("utf-8"))
 
         for local, (typ, base, rendered) in list(self.meta.items()):
             try:
@@ -697,6 +786,8 @@ def main():
     ap.add_argument("--externo", default=e("W2R_EXTERNO", "true"))
     ap.add_argument("--subdominios", default=e("W2R_SUBDOMINIOS", "false"))
     ap.add_argument("--archivos", default=e("W2R_ARCHIVOS", "true"))
+    ap.add_argument("--omitir", default=e("W2R_OMITIR", "precios,idiomas"))
+    ap.add_argument("--excluir", default=e("W2R_EXCLUIR", ""))
     ap.add_argument("--max-paginas", type=int, default=int(e("W2R_MAX_PAGINAS", "300") or 300))
     ap.add_argument("--max-archivos", type=int, default=int(e("W2R_MAX_ARCHIVOS", "8000") or 8000))
     ap.add_argument("--max-mb", type=int, default=int(e("W2R_MAX_MB", "800") or 800))
@@ -710,6 +801,8 @@ def main():
     a.acciones, a.robots = truthy(a.acciones), truthy(a.robots)
     a.external, a.subdomains, a.files = truthy(a.externo), truthy(a.subdominios), truthy(a.archivos)
     a.max_pages, a.max_files, a.max_mb, a.max_minutes = a.max_paginas, a.max_archivos, a.max_mb, a.max_minutos
+    a.omitir_set = {x.strip().lower() for x in a.omitir.split(",") if x.strip()}
+    a.excluir = [x.strip().lower() for x in a.excluir.split(",") if x.strip()]
 
     c = Cloner(a)
     log(f"Clonando {a.url} en copias/{c.carpeta}/ (modo {a.modo})")
@@ -720,6 +813,13 @@ def main():
     msg = (f"Listo: {len(c.rendered)} páginas, {c.count} archivos, {c.total_bytes/1048576:.1f} MB"
            f"{', ' + str(c.omitidos) + ' omitidos por límites' if c.omitidos else ''}.")
     log(msg)
+    if c.skipped:
+        por = {}
+        for m in c.skipped.values():
+            por[m] = por.get(m, 0) + 1
+        resumen = ", ".join(f"{v} por {k}" for k, v in por.items())
+        log(f"Enlaces omitidos: {resumen} (lista en _w2r/omitidas.json)")
+        msg += f" Omitidos: {resumen}."
     summ = os.environ.get("GITHUB_STEP_SUMMARY")
     if summ:
         with open(summ, "a", encoding="utf-8") as f:
